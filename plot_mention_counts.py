@@ -4,6 +4,7 @@ import plotly.express as px
 import streamlit as st
 
 INPUT_PATH = Path("data/fnb_pivoted_brand_counts.csv")
+COUNTS_INPUT = Path("data/fnb_brand_daily_counts.csv")  # must contain: date, keyword, post_mentions, top_subreddits
 START_DATE = '2025-08-24'
 END_DATE = '2025-08-31'
 
@@ -49,6 +50,49 @@ else:
 
     with st.expander("Show data table"):
         st.dataframe(long_df.sort_values(["brand", "date"]).reset_index(drop=True))
+
+# --- Top subreddits for selected brands in the week ---
+if COUNTS_INPUT.exists() and selected:
+    try:
+        df_counts = pd.read_csv(COUNTS_INPUT, encoding='utf-8')
+        # Ensure columns exist
+        required_cols = {"date", "keyword", "post_mentions", "top_subreddits"}
+        if required_cols.issubset(set(df_counts.columns)):
+            df_counts["date"] = pd.to_datetime(df_counts["date"])  # parse
+            # filter by window & selection
+            mask_counts = (
+                (df_counts["date"] >= pd.to_datetime(START_DATE)) &
+                (df_counts["date"] <= pd.to_datetime(END_DATE)) &
+                (df_counts["keyword"].isin(selected))
+            )
+            sub = df_counts.loc[mask_counts, ["keyword", "top_subreddits", "post_mentions"]].copy()
+            # split 'a;b;c' into rows; weight by post_mentions
+            sub["top_subreddits"] = sub["top_subreddits"].fillna("")
+            sub = sub.loc[sub["top_subreddits"] != ""]
+            if not sub.empty:
+                # explode into individual subreddit names
+                sub = sub.assign(subreddit=sub["top_subreddits"].str.split(";"))
+                sub = sub.explode("subreddit")
+                sub["subreddit"] = sub["subreddit"].str.strip()
+                # aggregate: sum post_mentions per (brand, subreddit)
+                agg = (sub.groupby(["keyword", "subreddit"], as_index=False)["post_mentions"].sum()
+                         .rename(columns={"post_mentions": "mentions"}))
+                # take top 3 per brand
+                top3 = (agg.sort_values(["keyword", "mentions"], ascending=[True, False])
+                           .groupby("keyword")
+                           .head(3)
+                           .reset_index(drop=True))
+                st.subheader("Top subreddits for selected brands (within window)")
+                st.dataframe(top3, use_container_width=True)
+            else:
+                st.info("No subreddit info available for the selected window/brands.")
+        else:
+            st.info("Counts file found but missing required columns: date, keyword, post_mentions, top_subreddits")
+    except Exception as e:
+        st.warning(f"Could not load top subreddit info: {e}")
+else:
+    if not COUNTS_INPUT.exists():
+        st.caption("Tip: Add 'data/brand_daily_counts.csv' (with 'top_subreddits') to show top subreddits here.")
 
 # --- Optional: Top 10 brands over the entire dataset, plotted over the selected week ---
 st.markdown("---")
